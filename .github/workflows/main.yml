@@ -1,0 +1,96 @@
+name: BrowserStack App LCA Test Execution
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      android_app_id:
+        description: 'Optional Hashed Android App ID'
+        required: false
+        default: ''
+      ios_app_id:
+        description: 'Optional Hashed iOS App ID'
+        required: false
+        default: ''
+
+jobs:
+  run-lca-tests:
+    runs-on: ubuntu-latest
+
+    env:
+      # Define your environment or repository secrets for credentials
+      BS_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+      BS_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+      # Replace this with your actual test suite ID
+      TEST_SUITE_ID: ${{TEST_SUITE_ID}} 
+
+    steps:
+      - name: Trigger Test Suite Execution
+        id: trigger_suite
+        run: |
+          echo "Triggering BrowserStack App LCA Test Suite..."
+          
+          # Construct JSON payload dynamically based on inputs if provided
+          PAYLOAD=$(jq -n \
+            --arg android "${{ github.event.inputs.android_app_id }}" \
+            --arg ios "${{ github.event.inputs.ios_app_id }}" \
+            '{"android_app_id": $android, "ios_app_id": $ios, "local_identifier": ""}')
+
+          # Execute the POST request
+          RESPONSE=$(curl -s -u "$BS_USERNAME:$BS_ACCESS_KEY" \
+            -X POST "https://app-lcnc-api.browserstack.com/api/v1/test-suite/$TEST_SUITE_ID/run" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+
+          echo "Response: $RESPONSE"
+
+          # Extract status and build_id
+          STATUS=$(echo "$RESPONSE" | jq -r '.status')
+          
+          if [ "$STATUS" != "SUCCESS" ]; then
+            echo "Error: Failed to trigger test suite execution."
+            echo "Message: $(echo "$RESPONSE" | jq -r '.message')"
+            exit 1
+          fi
+
+          BUILD_ID=$(echo "$RESPONSE" | jq -r '.build_id')
+          echo "Build triggered successfully! Build ID: $BUILD_ID"
+          
+          # Save Build ID for subsequent steps
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+
+      - name: Poll Build Status
+        run: |
+          BUILD_ID="${{ steps.trigger_suite.outputs.build_id }}"
+          echo "Polling status for Build ID: $BUILD_ID"
+          
+          # Loop until completion (passed, failed, or stopped)
+          while true; do
+            RESPONSE=$(curl -s -u "$BS_USERNAME:$BS_ACCESS_KEY" \
+              -X GET "https://app-lcnc-api.browserstack.com/api/v1/builds/$BUILD_ID/status")
+            
+            BUILD_STATUS=$(echo "$RESPONSE" | jq -r '.build_status')
+            echo "Current Build Status: $BUILD_STATUS"
+
+            if [ "$BUILD_STATUS" = "passed" ]; then
+              echo "Tests passed successfully! 🎉"
+              echo "Dashboard URL: $(echo "$RESPONSE" | jq -r '.app_lca_build_url')"
+              exit 0
+            elif [ "$BUILD_STATUS" = "failed" ] || [ "$BUILD_STATUS" = "stopped" ]; then
+              echo "Tests $BUILD_STATUS. ❌"
+              echo "Dashboard URL: $(echo "$RESPONSE" | jq -r '.app_lca_build_url')"
+              
+              # Print summary details
+              echo "Execution Summary:"
+              echo "$RESPONSE" | jq '.build_execution_summary'
+              exit 1
+            elif [ "$BUILD_STATUS" = "running" ] || [ "$BUILD_STATUS" = "queued" ]; then
+              echo "Tests are still processing... Waiting 30 seconds."
+              sleep 30
+            else
+              echo "Unknown status encountered or API error: $BUILD_STATUS"
+              echo "$RESPONSE"
+              exit 1
+            fi
+          done
