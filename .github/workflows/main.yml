@@ -45,18 +45,17 @@ jobs:
 
           echo "Response: $RESPONSE"
 
-          # Extract status and build_id
-          STATUS=$(echo "$RESPONSE" | jq -r '.status')
-          
-          if [ "$STATUS" != "SUCCESS" ]; then
+          # Extract build_id directly to check for success
+          BUILD_ID=$(echo "$RESPONSE" | jq -r '.build_id')
+
+          # If build_id is null or empty, the API call failed
+          if [ "$BUILD_ID" = "null" ] || [ -z "$BUILD_ID" ]; then
             echo "Error: Failed to trigger test suite execution."
-            echo "Message: $(echo "$RESPONSE" | jq -r '.message')"
+            echo "Message: $(echo "$RESPONSE" | jq -r '.message // "No error message provided by API."')"
             exit 1
           fi
 
-          BUILD_ID=$(echo "$RESPONSE" | jq -r '.build_id')
           echo "Build triggered successfully! Build ID: $BUILD_ID"
-          
           # Save Build ID for subsequent steps
           echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
 
